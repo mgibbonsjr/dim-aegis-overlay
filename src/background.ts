@@ -520,7 +520,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 function isNewerVersion(latest: string, current: string): boolean {
   const l = latest.split('.').map(Number);
   const c = current.split('.').map(Number);
-  for (let i = 0; i < 3; i++) {
+  for (let i = 0; i < 4; i++) {
     const latestNum = isNaN(l[i]) ? 0 : l[i];
     const currentNum = isNaN(c[i]) ? 0 : c[i];
     if (latestNum > currentNum) return true;
