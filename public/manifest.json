@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
-  "name": "DIM Aegis Roll Appraisal Overlay",
-  "version": "1.5.4",
+  "name": "DIM Aegis Roll Appraisal Overlay MG",
+  "version": "1.5.4.1",
   "description": "Display Aegis wishlist rankings directly inside Destiny Item Manager (DIM).",
   "permissions": [
     "storage",
