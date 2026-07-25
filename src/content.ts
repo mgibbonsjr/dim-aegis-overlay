@@ -993,21 +993,37 @@ function updateProgressIndicator() {
   }
 }
 
-function triggerDimSearchForIds(instanceIds: string[]) {
-  const searchInput = document.querySelector('input[name="filter"], input[placeholder*="filter" i], input[type="search"]') as HTMLInputElement;
-  if (searchInput && instanceIds.length > 0) {
-    const query = instanceIds.map(id => `id:${id}`).join(' or ');
-    searchInput.value = query;
-    searchInput.dispatchEvent(new Event('input', { bubbles: true }));
-    searchInput.dispatchEvent(new Event('change', { bubbles: true }));
+/** Locates DIM's inventory search box. */
+function getDimSearchInput(): HTMLInputElement | null {
+  return document.querySelector('input[name="filter"], input[placeholder*="filter" i], input[type="search"]');
+}
 
-    const wrapper = searchInput.parentElement;
-    if (wrapper) {
-      wrapper.classList.remove('aegis-search-flash');
-      void wrapper.offsetWidth; // Force reflow
-      wrapper.classList.add('aegis-search-flash');
-    }
+/**
+ * Writes a query into DIM's search box and lets React pick it up.
+ *
+ * Assigning `.value` directly works here only because this script runs in the
+ * ISOLATED world: the assignment hits the native setter rather than React's
+ * value tracker, so the dispatched `input` event is not swallowed as a no-op.
+ */
+function setDimSearchValue(query: string) {
+  const searchInput = getDimSearchInput();
+  if (!searchInput) return;
+
+  searchInput.value = query;
+  searchInput.dispatchEvent(new Event('input', { bubbles: true }));
+  searchInput.dispatchEvent(new Event('change', { bubbles: true }));
+
+  const wrapper = searchInput.parentElement;
+  if (wrapper) {
+    wrapper.classList.remove('aegis-search-flash');
+    void wrapper.offsetWidth; // Force reflow
+    wrapper.classList.add('aegis-search-flash');
   }
+}
+
+function triggerDimSearchForIds(instanceIds: string[]) {
+  if (instanceIds.length === 0) return;
+  setDimSearchValue(instanceIds.map(id => `id:${id}`).join(' or '));
 }
 function buildSelectHtml(currentValue: string, recommendedList: string[], globalSet: Set<string>) {
   const cleanRecs = recommendedList.map(r => r.toLowerCase().trim());
@@ -1581,19 +1597,7 @@ function renderResults() {
 }
 
 function triggerDimSearch(weaponName: string) {
-  const searchInput = document.querySelector('input[name="filter"], input[placeholder*="filter" i], input[type="search"]') as HTMLInputElement;
-  if (searchInput) {
-    searchInput.value = `name:"${weaponName}"`;
-    searchInput.dispatchEvent(new Event('input', { bubbles: true }));
-    searchInput.dispatchEvent(new Event('change', { bubbles: true }));
-
-    const wrapper = searchInput.parentElement;
-    if (wrapper) {
-      wrapper.classList.remove('aegis-search-flash');
-      void wrapper.offsetWidth; // Force layout recalculation
-      wrapper.classList.add('aegis-search-flash');
-    }
-  }
+  setDimSearchValue(`name:"${weaponName}"`);
 }
 
 function initAegisExplorer() {
@@ -1900,6 +1904,7 @@ function showWelcomeModal() {
               </div>
             </div>
             <div class="tooltip-divider" style="margin: 8px 0;"></div>
+            <p class="tooltip-note"><strong>Tag &amp; manage matches:</strong> These filters only highlight items, so DIM's item count and bulk actions can't see them. Click <strong>Apply to DIM</strong> under the search bar to rewrite the query into DIM's own <code class="filter-code">id:</code>/<code class="filter-code">hash:</code> terms &mdash; then the item count appears and <em>Tag as 'Favorite'</em>, <em>Tag as 'Junk'</em>, Lock and Compare all work on the results. Press the <strong>&times;</strong> on the chip to get your <code class="filter-code">aegis:</code> text back. Aegis filters combine with normal DIM terms, e.g. <code class="filter-code">aegis:w:&gt;a is:smg</code>.</p>
             <p class="tooltip-note"><strong>Pro-Tip:</strong> Want to use your own wishlist? You can sync and toggle custom DIM wishlists in the settings popup anytime.</p>
           </div>
         </div>
@@ -2747,6 +2752,7 @@ function processElement(el: HTMLElement) {
       (el as any)._aegisResult = result;
       (el as any)._aegisName = weaponName;
       (el as any)._aegisSheetArmor = sheetArmor;
+      rememberScoredInstance(el, result);
 
       if (result.grade) {
         const isPopup = el.matches('[class*="ItemPopup"], [class*="item-popup"], [class*="Sheet"], [class*="sheet"], .item-popup');
@@ -2958,6 +2964,7 @@ function processElement(el: HTMLElement) {
 
     // Attach data on the element object for hover events to retrieve
     (el as any)._aegisResult = result;
+    rememberScoredInstance(el, result);
     (el as any)._aegisName = weaponName;
     (el as any)._aegisPerksMap = perksMap;
     (el as any)._aegisActiveHashes = activeHashes;
@@ -3018,6 +3025,26 @@ function processElement(el: HTMLElement) {
   }
 }
 
+/**
+ * Every item this session has scored, keyed by its DIM instance id.
+ *
+ * The dimming preview can read `_aegisResult` straight off the tile, but the
+ * native-query expansion cannot: applying a filter unmounts non-matching tiles
+ * when DIM's "hide items that don't match" setting is on, taking their scores
+ * with them. Stale entries for dismantled items are harmless — an `id:` term
+ * for an item that no longer exists simply matches nothing.
+ */
+const scoredInstances = new Map<string, { hash: number; result: ScoringResult }>();
+
+function rememberScoredInstance(el: HTMLElement, result: ScoringResult) {
+  const instanceId = el.getAttribute('data-aegis-instance-id');
+  if (!instanceId || instanceId === '0') return;
+  const hash = parseInt(el.getAttribute('data-aegis-item-hash') || '', 10);
+  if (isNaN(hash)) return;
+  if (!scoredInstances.has(instanceId)) scheduleApplyBarRefresh();
+  scoredInstances.set(instanceId, { hash, result });
+}
+
 const GRADE_VALUES: Record<string, number> = {
   's+': 9,
   's': 8,
@@ -3051,8 +3078,313 @@ function compareGrades(itemGrade: string, queryStr: string): boolean {
   return normalizedGrade === queryStr || normalizedGrade.startsWith(queryStr);
 }
 
+/**
+ * Decides whether a scored item satisfies a single `aegis:` query value
+ * (the part after the colon, e.g. "w:>a", "a:2p:s", "god", "upgrade").
+ *
+ * Shared by the live dimming preview and by the native-query expansion, so
+ * both always agree on what an aegis term means.
+ */
+function matchesAegisQuery(result: ScoringResult | undefined, targetQuery: string): boolean {
+  const grade = result?.grade?.toLowerCase() || '';
+  // Extract weapon rank and perk rank if it's a 2-tier grade (e.g. "bs+")
+  let isMatch = false;
+  const isArmor = grade.includes('/');
+
+  if (isArmor) {
+    let cleanQuery = targetQuery;
+    if (targetQuery.startsWith('a:') || targetQuery.startsWith('armor:')) {
+      cleanQuery = targetQuery.startsWith('a:') ? targetQuery.substring(2) : targetQuery.substring(6);
+    }
+
+    const parts = grade.split('/');
+    const rating2 = parts[0];
+    const rating4 = parts[1];
+
+    if (cleanQuery.startsWith('2p:') || cleanQuery.startsWith('2piece:')) {
+      const targetRank = cleanQuery.startsWith('2p:') ? cleanQuery.substring(3) : cleanQuery.substring(7);
+      isMatch = compareGrades(rating2, targetRank);
+    } else if (cleanQuery.startsWith('4p:') || cleanQuery.startsWith('4piece:')) {
+      const targetRank = cleanQuery.startsWith('4p:') ? cleanQuery.substring(3) : cleanQuery.substring(7);
+      isMatch = compareGrades(rating4, targetRank);
+    } else if (cleanQuery.includes('/')) {
+      isMatch = (grade === cleanQuery);
+    } else {
+      // General query matching either 2p or 4p rating
+      isMatch = compareGrades(rating2, cleanQuery) || compareGrades(rating4, cleanQuery);
+    }
+  } else {
+    // If the query starts with 'a:' or 'armor:', it's an armor-only filter, so weapons should not match.
+    if (targetQuery.startsWith('a:') || targetQuery.startsWith('armor:')) {
+      isMatch = false;
+    } else {
+      let weaponRank = '';
+      let perkRank = '';
+      const isTwoTier = grade.length > 2 || (grade.length === 2 && !grade.endsWith('+') && !grade.endsWith('-'));
+      if (isTwoTier) {
+        weaponRank = grade.charAt(0);
+        perkRank = grade.substring(1);
+      } else {
+        perkRank = grade;
+      }
+
+      if (targetQuery === 'upgradeable' || targetQuery === 'upgradable' || targetQuery === 'upgrade') {
+        isMatch = !!result?.upgradeAvailable;
+      } else if (targetQuery === 'god') {
+        isMatch = compareGrades(perkRank, '>=s');
+      } else if (targetQuery.startsWith('w:') || targetQuery.startsWith('weapon:')) {
+        const targetRank = targetQuery.startsWith('w:') ? targetQuery.substring(2) : targetQuery.substring(7);
+        isMatch = compareGrades(weaponRank, targetRank);
+      } else if (targetQuery.startsWith('p:') || targetQuery.startsWith('perk:')) {
+        const targetRank = targetQuery.startsWith('p:') ? targetQuery.substring(2) : targetQuery.substring(5);
+        isMatch = compareGrades(perkRank, targetRank);
+      } else {
+        // General match: combined grade, or weapon rank, or perk rank
+        isMatch = compareGrades(grade, targetQuery) || compareGrades(weaponRank, targetQuery) || compareGrades(perkRank, targetQuery);
+      }
+    }
+  }
+
+  return isMatch;
+}
+
+// ── aegis: → native DIM query bridge ─────────────────────────────────────────
+// `aegis:` terms are not real DIM filters, so DIM's own item count and the
+// search-bar bulk actions (Tag as 'Favorite', Lock, Compare, …) never see them.
+// The live dimming preview below stays as instant feedback, but the user can
+// also "apply" an aegis query: every aegis token is spliced out of the query
+// and replaced with an equivalent group of DIM's own `id:` / `hash:` filters,
+// which the real filter pipeline understands.
+
+interface AegisToken {
+  start: number;
+  end: number;
+  query: string;
+}
+
+interface AegisExpansion {
+  query: string;
+  count: number;
+}
+
+// Matches an aegis term and its value, including the comparison operators.
+const AEGIS_TOKEN_PATTERN = /\baegis:([a-z0-9+:<>=\/-]+)/gi;
+
+// A freeform `id:` value no real item can have, used when a term matches
+// nothing — an empty `()` group would be a parse error in DIM.
+const AEGIS_NO_MATCH_TERM = 'id:aegis-no-match';
+
+/** Finds every `aegis:` token in the raw (non-lowercased) query, with offsets. */
+function findAegisTokens(raw: string): AegisToken[] {
+  const tokens: AegisToken[] = [];
+  AEGIS_TOKEN_PATTERN.lastIndex = 0;
+  let match: RegExpExecArray | null;
+  while ((match = AEGIS_TOKEN_PATTERN.exec(raw)) !== null) {
+    tokens.push({
+      start: match.index,
+      end: match.index + match[0].length,
+      query: match[1].toLowerCase(),
+    });
+  }
+  return tokens;
+}
+
+/**
+ * True when a query's verdict depends only on the item definition, so every
+ * instance sharing an item hash necessarily agrees. Weapon archetype tiers and
+ * armor set-bonus grades come from the sheet and are per-weapon; perk-roll
+ * grades are per-instance and must never be collapsed to a `hash:` term.
+ */
+function isHashDeterministic(targetQuery: string): boolean {
+  return /^(w|weapon|a|armor):/.test(targetQuery);
+}
+
+/**
+ * Turns one aegis query value into the equivalent native DIM terms.
+ *
+ * For definition-level queries the matches collapse to one `hash:` term per
+ * weapon instead of one `id:` per copy, which keeps a vault-wide query around a
+ * kilobyte rather than several. Roll-level queries stay per-instance.
+ */
+function buildNativeTerms(targetQuery: string): { terms: string[]; ids: Set<string> } {
+  const ids = new Set<string>();
+  const byHash = new Map<number, { total: number; matched: string[] }>();
+
+  scoredInstances.forEach((entry, instanceId) => {
+    let bucket = byHash.get(entry.hash);
+    if (!bucket) {
+      bucket = { total: 0, matched: [] };
+      byHash.set(entry.hash, bucket);
+    }
+    bucket.total++;
+    if (matchesAegisQuery(entry.result, targetQuery)) {
+      bucket.matched.push(instanceId);
+      ids.add(instanceId);
+    }
+  });
+
+  const collapsible = isHashDeterministic(targetQuery);
+  const terms: string[] = [];
+  byHash.forEach((bucket, hash) => {
+    if (bucket.matched.length === 0) return;
+    if (collapsible && bucket.matched.length === bucket.total) {
+      terms.push(`hash:${hash}`);
+    } else {
+      for (const id of bucket.matched) {
+        terms.push(`id:${id}`);
+      }
+    }
+  });
+
+  return { terms, ids };
+}
+
+/**
+ * Rewrites a query containing `aegis:` terms into one DIM can evaluate itself.
+ * Non-aegis terms are preserved verbatim, so `aegis:w:>a is:smg` still narrows
+ * by weapon type. Returns null when there is nothing to expand.
+ */
+function expandAegisQuery(raw: string): AegisExpansion | null {
+  const tokens = findAegisTokens(raw);
+  if (tokens.length === 0) return null;
+
+  let out = '';
+  let cursor = 0;
+  const perToken: Set<string>[] = [];
+
+  for (const token of tokens) {
+    const { terms, ids } = buildNativeTerms(token.query);
+    perToken.push(ids);
+    out += raw.slice(cursor, token.start);
+    out += terms.length > 0 ? `(${terms.join(' or ')})` : AEGIS_NO_MATCH_TERM;
+    cursor = token.end;
+  }
+  out += raw.slice(cursor);
+
+  // Tokens are ANDed by DIM, so the count the user sees is the intersection.
+  const matched = Array.from(perToken[0]).filter((id) => perToken.every((ids) => ids.has(id)));
+
+  return { query: out.trim(), count: matched.length };
+}
+
+// The aegis text the user typed before applying, and the expansion we wrote
+// into the search box. Both are cleared as soon as the box no longer holds
+// that exact expansion (i.e. the user edited or cleared the search).
+let appliedAegisSource: string | null = null;
+let appliedAegisQuery: string | null = null;
+let applyBarEl: HTMLElement | null = null;
+
+function ensureApplyBar(): HTMLElement {
+  if (applyBarEl && applyBarEl.isConnected) return applyBarEl;
+  const bar = document.createElement('div');
+  bar.className = 'aegis-apply-bar';
+  bar.style.display = 'none';
+  document.body.appendChild(bar);
+  applyBarEl = bar;
+  return bar;
+}
+
+function positionApplyBar(bar: HTMLElement, input: HTMLInputElement) {
+  const rect = input.getBoundingClientRect();
+  bar.style.left = `${Math.max(8, rect.left)}px`;
+  bar.style.top = `${rect.bottom + 6}px`;
+}
+
+function applyAegisQuery(input: HTMLInputElement) {
+  const source = input.value;
+  const expansion = expandAegisQuery(source);
+  if (!expansion) return;
+  appliedAegisSource = source;
+  appliedAegisQuery = expansion.query;
+  setDimSearchValue(expansion.query);
+  updateApplyBar();
+}
+
+function restoreAegisQuery() {
+  if (appliedAegisSource === null) return;
+  const source = appliedAegisSource;
+  appliedAegisSource = null;
+  appliedAegisQuery = null;
+  setDimSearchValue(source);
+  updateApplyBar();
+}
+
+/**
+ * Recomputes the Apply / Applied control under DIM's search bar to match the
+ * current query. Safe to call often — it is a no-op when nothing changed.
+ */
+function updateApplyBar() {
+  const input = getDimSearchInput();
+  if (!input) {
+    if (applyBarEl) applyBarEl.style.display = 'none';
+    return;
+  }
+
+  const raw = input.value;
+  const isApplied = appliedAegisQuery !== null && raw.trim() === appliedAegisQuery.trim();
+  if (!isApplied && appliedAegisQuery !== null) {
+    // The user edited the box after applying — drop the applied state.
+    appliedAegisSource = null;
+    appliedAegisQuery = null;
+  }
+
+  const bar = ensureApplyBar();
+
+  if (isApplied) {
+    const label = appliedAegisSource || '';
+    bar.innerHTML = `
+      <span class="aegis-apply-chip">
+        <span class="aegis-apply-chip-label">Applied</span>
+        <code class="aegis-apply-chip-query"></code>
+        <button type="button" class="aegis-apply-restore" title="Restore the aegis query">&times;</button>
+      </span>`;
+    const queryEl = bar.querySelector('.aegis-apply-chip-query');
+    if (queryEl) queryEl.textContent = label;
+    bar.querySelector('.aegis-apply-restore')?.addEventListener('click', restoreAegisQuery);
+    bar.style.display = 'flex';
+    positionApplyBar(bar, input);
+    return;
+  }
+
+  const expansion = expandAegisQuery(raw);
+  if (!expansion) {
+    bar.style.display = 'none';
+    bar.innerHTML = '';
+    return;
+  }
+
+  bar.innerHTML = `
+    <button type="button" class="aegis-apply-btn" title="Rewrite this into a native DIM query so the item count and bulk tagging work">
+      Apply to DIM <span class="aegis-apply-count">${expansion.count}</span>
+    </button>`;
+  bar.querySelector('.aegis-apply-btn')?.addEventListener('click', () => applyAegisQuery(input));
+  bar.style.display = 'flex';
+  positionApplyBar(bar, input);
+}
+
+// New items are scored asynchronously as DIM renders them, so a count shown
+// moments after typing can be stale. Refresh on a short debounce instead.
+let applyBarRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+
+function scheduleApplyBarRefresh() {
+  if (applyBarRefreshTimer) return;
+  applyBarRefreshTimer = setTimeout(() => {
+    applyBarRefreshTimer = null;
+    updateApplyBar();
+  }, 400);
+}
+
+window.addEventListener('resize', () => updateApplyBar());
+window.addEventListener('scroll', () => {
+  // Fires constantly while scrolling the inventory, so bail before touching the
+  // DOM in the overwhelmingly common case where the bar isn't even showing.
+  if (!applyBarEl || applyBarEl.style.display === 'none') return;
+  const input = getDimSearchInput();
+  if (input) positionApplyBar(applyBarEl, input);
+}, true);
+
 function setupSearchFilterObserver() {
-  const searchInput = document.querySelector('input[name="filter"], input[placeholder*="filter" i], input[type="search"]') as HTMLInputElement;
+  const searchInput = getDimSearchInput();
   if (!searchInput) return;
 
   if (searchInput.hasAttribute('data-aegis-search-observer')) return;
@@ -3060,73 +3392,15 @@ function setupSearchFilterObserver() {
 
   searchInput.addEventListener('input', () => {
     const val = searchInput.value.trim().toLowerCase();
-    
+
     // Check if search query has "aegis:grade" (allowing comparison operators > < = /)
-    const aegisMatch = val.match(/\baegis:([a-z0-9+:-><=/]+)/);
-    
-    if (aegisMatch) {
-      const targetQuery = aegisMatch[1].toLowerCase();
+    const tokens = findAegisTokens(val);
+
+    if (tokens.length > 0) {
       const items = document.querySelectorAll<HTMLElement>('[data-aegis-item-hash]');
       items.forEach(item => {
         const result = (item as any)._aegisResult as ScoringResult | undefined;
-        const grade = result?.grade?.toLowerCase() || '';
-        // Extract weapon rank and perk rank if it's a 2-tier grade (e.g. "bs+")
-        let isMatch = false;
-        const isArmor = grade.includes('/');
-
-        if (isArmor) {
-          let cleanQuery = targetQuery;
-          if (targetQuery.startsWith('a:') || targetQuery.startsWith('armor:')) {
-            cleanQuery = targetQuery.startsWith('a:') ? targetQuery.substring(2) : targetQuery.substring(6);
-          }
-
-          const parts = grade.split('/');
-          const rating2 = parts[0];
-          const rating4 = parts[1];
-
-          if (cleanQuery.startsWith('2p:') || cleanQuery.startsWith('2piece:')) {
-            const targetRank = cleanQuery.startsWith('2p:') ? cleanQuery.substring(3) : cleanQuery.substring(7);
-            isMatch = compareGrades(rating2, targetRank);
-          } else if (cleanQuery.startsWith('4p:') || cleanQuery.startsWith('4piece:')) {
-            const targetRank = cleanQuery.startsWith('4p:') ? cleanQuery.substring(3) : cleanQuery.substring(7);
-            isMatch = compareGrades(rating4, targetRank);
-          } else if (cleanQuery.includes('/')) {
-            isMatch = (grade === cleanQuery);
-          } else {
-            // General query matching either 2p or 4p rating
-            isMatch = compareGrades(rating2, cleanQuery) || compareGrades(rating4, cleanQuery);
-          }
-        } else {
-          // If the query starts with 'a:' or 'armor:', it's an armor-only filter, so weapons should not match.
-          if (targetQuery.startsWith('a:') || targetQuery.startsWith('armor:')) {
-            isMatch = false;
-          } else {
-            let weaponRank = '';
-            let perkRank = '';
-            const isTwoTier = grade.length > 2 || (grade.length === 2 && !grade.endsWith('+') && !grade.endsWith('-'));
-            if (isTwoTier) {
-              weaponRank = grade.charAt(0);
-              perkRank = grade.substring(1);
-            } else {
-              perkRank = grade;
-            }
-
-            if (targetQuery === 'upgradeable' || targetQuery === 'upgradable' || targetQuery === 'upgrade') {
-              isMatch = !!result?.upgradeAvailable;
-            } else if (targetQuery === 'god') {
-              isMatch = compareGrades(perkRank, '>=s');
-            } else if (targetQuery.startsWith('w:') || targetQuery.startsWith('weapon:')) {
-              const targetRank = targetQuery.startsWith('w:') ? targetQuery.substring(2) : targetQuery.substring(7);
-              isMatch = compareGrades(weaponRank, targetRank);
-            } else if (targetQuery.startsWith('p:') || targetQuery.startsWith('perk:')) {
-              const targetRank = targetQuery.startsWith('p:') ? targetQuery.substring(2) : targetQuery.substring(5);
-              isMatch = compareGrades(perkRank, targetRank);
-            } else {
-              // General match: combined grade, or weapon rank, or perk rank
-              isMatch = compareGrades(grade, targetQuery) || compareGrades(weaponRank, targetQuery) || compareGrades(perkRank, targetQuery);
-            }
-          }
-        }
+        const isMatch = tokens.every((token) => matchesAegisQuery(result, token.query));
 
         if (isMatch) {
           item.style.setProperty('opacity', '1', 'important');
@@ -3144,7 +3418,11 @@ function setupSearchFilterObserver() {
         item.style.removeProperty('filter');
       });
     }
+
+    updateApplyBar();
   });
+
+  updateApplyBar();
 }
 
 /**

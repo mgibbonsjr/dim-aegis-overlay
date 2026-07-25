@@ -2003,6 +2003,98 @@ body.aegis-scrolling div[id^="item-"][data-aegis-item-hash]:hover {
   border-radius: 4px !important;
 }
 
+/* "Apply to DIM" control, floated beneath DIM's search bar. Positioned with
+   fixed coordinates rather than injected into DIM's own layout, whose class
+   names are build-hashed and whose header row is easy to break. */
+.aegis-apply-bar {
+  position: fixed !important;
+  z-index: 10000 !important;
+  display: flex !important;
+  align-items: center !important;
+  gap: 8px !important;
+  font-size: 11px !important;
+  pointer-events: auto !important;
+}
+
+.aegis-apply-btn {
+  display: inline-flex !important;
+  align-items: center !important;
+  gap: 6px !important;
+  height: 24px !important;
+  padding: 0 10px !important;
+  border: 1px solid rgba(255, 179, 0, 0.5) !important;
+  border-radius: 12px !important;
+  background: rgba(24, 24, 26, 0.96) !important;
+  color: #ffb300 !important;
+  font-size: 11px !important;
+  font-weight: 700 !important;
+  letter-spacing: 0.02em !important;
+  cursor: pointer !important;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.5) !important;
+  transition: background 0.15s ease, border-color 0.15s ease !important;
+}
+
+.aegis-apply-btn:hover {
+  background: rgba(255, 179, 0, 0.14) !important;
+  border-color: rgba(255, 179, 0, 0.9) !important;
+}
+
+.aegis-apply-count {
+  padding: 0 5px !important;
+  border-radius: 8px !important;
+  background: rgba(255, 179, 0, 0.2) !important;
+  color: #ffd77a !important;
+  font-variant-numeric: tabular-nums !important;
+}
+
+.aegis-apply-chip {
+  display: inline-flex !important;
+  align-items: center !important;
+  gap: 6px !important;
+  max-width: 420px !important;
+  height: 24px !important;
+  padding: 0 4px 0 10px !important;
+  border: 1px solid rgba(255, 179, 0, 0.35) !important;
+  border-radius: 12px !important;
+  background: rgba(24, 24, 26, 0.96) !important;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.5) !important;
+}
+
+.aegis-apply-chip-label {
+  color: #8f8f96 !important;
+  font-size: 10px !important;
+  text-transform: uppercase !important;
+  letter-spacing: 0.06em !important;
+}
+
+.aegis-apply-chip-query {
+  overflow: hidden !important;
+  color: #ffb300 !important;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace !important;
+  font-size: 11px !important;
+  text-overflow: ellipsis !important;
+  white-space: nowrap !important;
+}
+
+.aegis-apply-restore {
+  flex: 0 0 auto !important;
+  width: 18px !important;
+  height: 18px !important;
+  padding: 0 !important;
+  border: none !important;
+  border-radius: 50% !important;
+  background: transparent !important;
+  color: #8f8f96 !important;
+  font-size: 14px !important;
+  line-height: 1 !important;
+  cursor: pointer !important;
+}
+
+.aegis-apply-restore:hover {
+  background: rgba(255, 255, 255, 0.1) !important;
+  color: #fff !important;
+}
+
 /* Accordion Actions & Button styling for Explorer Rows */
 .aegis-explorer-row.expanded {
   background: rgba(255, 255, 255, 0.04) !important;
