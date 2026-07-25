@@ -3,3 +3,7 @@ dist/
 *.local
 *.zip
 MOZILLA_REPRODUCTION.md
+
+# Stray tsc output. The build emits to dist/ via Vite; tsconfig sets noEmit,
+# so these should never reappear, but ignore them in case tsc is run directly.
+src/*.js

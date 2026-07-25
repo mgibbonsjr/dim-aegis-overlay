@@ -18,7 +18,10 @@
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
     "resolveJsonModule": true,
-    "isolatedModules": true
+    "isolatedModules": true,
+    // Vite builds the real output into dist/. tsc is used for type-checking
+    // only; without this it emits .js next to every .ts source.
+    "noEmit": true
   },
   "include": ["src/**/*"]
 }
